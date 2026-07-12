@@ -35,9 +35,23 @@ PlasmoidItem {
     // Local Claude Code activity on this machine (free, no token cost).
     property var sessionData: null
 
-    readonly property int sessionCount: sessionData ? (sessionData.sessions || 0) : 0
-    readonly property int workingCount: sessionData ? (sessionData.working || 0) : 0
+    // Actively-working agents / sub-agents on this machine (right now).
     readonly property int agentCount: sessionData ? (sessionData.agents || 0) : 0
+    readonly property int subagentCount: sessionData ? (sessionData.subagents || 0) : 0
+    readonly property bool hasActivity: agentCount > 0 || subagentCount > 0
+    readonly property string activityText: {
+        var parts = []
+        if (agentCount > 0) parts.push(agentCount + (agentCount === 1 ? " agent" : " agents"))
+        if (subagentCount > 0) parts.push(subagentCount + (subagentCount === 1 ? " sub-agent" : " sub-agents"))
+        return parts.join(" · ")
+    }
+    // Terse compact form: "1", "1 +2", "+2".
+    readonly property string activityCompact: {
+        var parts = []
+        if (agentCount > 0) parts.push("" + agentCount)
+        if (subagentCount > 0) parts.push("+" + subagentCount)
+        return parts.join(" ")
+    }
 
     // Service status extras
     readonly property var maintenances: statusData && statusData.maintenances ? statusData.maintenances : []
@@ -415,11 +429,11 @@ PlasmoidItem {
                 }
             }
 
-            // Local Claude Code activity: a green dot + working count (with a
-            // "+N" agent tally), shown only when something is actively working.
+            // Active agents / sub-agents: a green dot + count, shown only while
+            // something is actively working.
             Row {
                 spacing: 3
-                visible: root.cfgShowSessions && (root.workingCount > 0 || root.agentCount > 0)
+                visible: root.cfgShowSessions && root.hasActivity
 
                 Rectangle {
                     width: 6
@@ -430,7 +444,7 @@ PlasmoidItem {
                 }
 
                 PlasmaComponents.Label {
-                    text: root.workingCount + (root.agentCount > 0 ? " +" + root.agentCount : "")
+                    text: root.activityCompact
                     font.pixelSize: 9
                     anchors.verticalCenter: parent.verticalCenter
                 }
@@ -557,38 +571,24 @@ PlasmoidItem {
                 }
             }
 
-            // Local Claude Code activity on this machine
+            // Active Claude Code agents / sub-agents on this machine
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
-                visible: root.cfgShowSessions && root.sessionCount > 0
+                visible: root.cfgShowSessions && root.hasActivity
 
-                Kirigami.Icon {
-                    source: "utilities-terminal"
-                    Layout.preferredWidth: 12
-                    Layout.preferredHeight: 12
+                Rectangle {
+                    Layout.preferredWidth: 8
+                    Layout.preferredHeight: 8
+                    radius: 4
                     Layout.alignment: Qt.AlignVCenter
+                    color: Kirigami.Theme.positiveTextColor
                 }
 
                 PlasmaComponents.Label {
-                    text: root.sessionCount + (root.sessionCount === 1 ? " session" : " sessions")
+                    text: root.activityText + " working"
                     font.pixelSize: 11
                     opacity: 0.9
-                }
-
-                PlasmaComponents.Label {
-                    text: "· " + root.workingCount + " working"
-                    font.pixelSize: 11
-                    color: root.workingCount > 0
-                           ? Kirigami.Theme.positiveTextColor
-                           : Kirigami.Theme.disabledTextColor
-                }
-
-                PlasmaComponents.Label {
-                    text: "· " + root.agentCount + (root.agentCount === 1 ? " agent" : " agents")
-                    font.pixelSize: 11
-                    opacity: 0.8
-                    visible: root.agentCount > 0
                 }
 
                 Item { Layout.fillWidth: true }

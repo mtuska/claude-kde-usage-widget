@@ -76,8 +76,8 @@ Kirigami.FormLayout {
 
     QQC2.CheckBox {
         id: showSessionsCheck
-        Kirigami.FormData.label: "Sessions:"
-        text: "Show running sessions / working / sub-agents (this machine)"
+        Kirigami.FormData.label: "Agents:"
+        text: "Show active agents / sub-agents working now (this machine)"
     }
 
     QQC2.SpinBox {

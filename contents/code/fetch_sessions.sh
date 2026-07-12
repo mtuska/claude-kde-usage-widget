@@ -1,16 +1,19 @@
 #!/bin/bash
-# Count local Claude Code activity on this machine and emit JSON:
-#   {"sessions": N, "working": N, "agents": N}
+# Count Claude Code agents actively working on this machine, and emit JSON:
+#   {"agents": N, "subagents": M}
 #
-#   sessions – running Claude Code chats (live ~/.claude/sessions/<pid>.json)
-#   working  – of those, how many streamed transcript output in the last WINDOW s
-#   agents   – sub-agent transcripts freshly written in the last WINDOW s
+#   agents    – top-level sessions currently generating (their main transcript
+#               was written within WINDOW seconds)
+#   subagents – Task-spawned sub-agents currently generating (a fresh transcript
+#               under a .../subagents/ directory)
 #
-# Purely local filesystem reads — no network, no API tokens. There is no
-# way to see chats on claude.ai or other machines, only local sessions.
+# "Actively working" is inferred from transcript write recency: Claude Code
+# streams output to the transcript continuously while generating and stops when
+# idle. This only counts work happening now — not merely-open editor windows —
+# and is a purely local filesystem read (no network, no API tokens).
 
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
-WINDOW="${SESSION_WINDOW:-45}"
+WINDOW="${SESSION_WINDOW:-30}"
 export CLAUDE_DIR WINDOW
 
 python3 - <<'PYEOF'
@@ -20,17 +23,7 @@ home = os.environ["CLAUDE_DIR"]
 window = float(os.environ["WINDOW"])
 proj = os.path.join(home, "projects")
 now = time.time()
-
-def alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists, owned by someone else (shouldn't happen for us)
-    except (TypeError, ValueError):
-        return False
-    return True
+sep = os.sep
 
 def fresh(path):
     try:
@@ -38,38 +31,15 @@ def fresh(path):
     except OSError:
         return False
 
-# Live interactive sessions, keyed by sessionId.
-session_ids = []
-for f in glob.glob(os.path.join(home, "sessions", "*.json")):
-    try:
-        d = json.load(open(f))
-    except Exception:
+agents = 0
+subagents = 0
+for path in glob.glob(os.path.join(proj, "**", "*.jsonl"), recursive=True):
+    if not fresh(path):
         continue
-    pid = d.get("pid")
-    if pid is None:
-        base = os.path.splitext(os.path.basename(f))[0]
-        pid = int(base) if base.isdigit() else None
-    if alive(pid):
-        sid = d.get("sessionId")
-        if sid:
-            session_ids.append(sid)
+    if (sep + "subagents" + sep) in path:
+        subagents += 1
+    else:
+        agents += 1
 
-# A session counts as "working" if its own transcript or any of its
-# sub-agent transcripts was written within the window.
-working = 0
-for sid in session_ids:
-    mains = glob.glob(os.path.join(proj, "*", sid + ".jsonl"))
-    subs  = glob.glob(os.path.join(proj, "*", sid, "subagents", "*.jsonl"))
-    if any(fresh(p) for p in mains + subs):
-        working += 1
-
-# Sub-agents actively working anywhere (fresh subagent transcripts).
-agents = sum(1 for p in glob.glob(os.path.join(proj, "*", "*", "subagents", "*.jsonl"))
-             if fresh(p))
-
-print(json.dumps({
-    "sessions": len(session_ids),
-    "working": working,
-    "agents": agents,
-}))
+print(json.dumps({"agents": agents, "subagents": subagents}))
 PYEOF
