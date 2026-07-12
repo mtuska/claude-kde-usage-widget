@@ -12,6 +12,11 @@ ColumnLayout {
     // One window object from fetch_limits.sh output (h5 or d7)
     property var windowData: null
 
+    // Local token usage in this window and the recent burn rate (tokens/hour),
+    // from fetch_usage.sh — used to estimate the hidden ceiling and ETA.
+    property real windowTokens: 0
+    property real ratePerHour: 0
+
     readonly property real utilization: windowData ? windowData.utilization : 0
     readonly property string status: windowData ? (windowData.status || "") : ""
     readonly property string resetIn: windowData ? (windowData.reset_in || "") : ""
@@ -56,6 +61,26 @@ ColumnLayout {
 
     readonly property bool limited: Utils.isLimited(status)
     readonly property color barColor: Utils.barColor(status, utilization, Kirigami.Theme.negativeTextColor)
+
+    // Estimated total ceiling for this window: used ÷ utilization (rough — the
+    // server's utilization weighting differs from a raw token sum).
+    readonly property bool hasEstimate: windowTokens > 0 && utilization > 0.01
+    readonly property real estimatedCeiling: hasEstimate ? windowTokens / utilization : 0
+
+    // ETA to the limit at the current burn rate, capped at the window reset.
+    readonly property real etaHours: (hasEstimate && ratePerHour > 0)
+        ? Math.max(estimatedCeiling - windowTokens, 0) / ratePerHour : 0
+    readonly property real hoursToReset: diffMs > 0 ? diffMs / 3600000 : 0
+    // Only meaningful if the limit would be hit before the window resets.
+    readonly property bool etaBeforeReset: etaHours > 0 && hoursToReset > 0 && etaHours < hoursToReset
+
+    readonly property string estimateLabel: {
+        if (!hasEstimate) return ""
+        var t = "~" + Utils.fmtTokens(windowTokens) + " / ~" + Utils.fmtTokens(estimatedCeiling) + " tok"
+        if (etaBeforeReset)
+            t += " · full in ~" + Utils.fmtHours(etaHours)
+        return t
+    }
 
     spacing: 4
 
@@ -103,10 +128,26 @@ ColumnLayout {
         }
     }
 
-    PlasmaComponents.Label {
-        text: root.resetLabel ? "Resets " + root.resetLabel : ""
-        font.pixelSize: 10
-        opacity: 0.7
-        visible: root.resetIn !== ""
+    RowLayout {
+        Layout.fillWidth: true
+        spacing: 6
+
+        PlasmaComponents.Label {
+            text: root.resetLabel ? "Resets " + root.resetLabel : ""
+            font.pixelSize: 10
+            opacity: 0.7
+            visible: root.resetIn !== ""
+        }
+
+        Item { Layout.fillWidth: true }
+
+        // Estimated used / ceiling (+ ETA to limit at current burn).
+        PlasmaComponents.Label {
+            text: root.estimateLabel
+            font.pixelSize: 10
+            opacity: 0.7
+            color: root.etaBeforeReset ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.textColor
+            visible: root.hasEstimate
+        }
     }
 }

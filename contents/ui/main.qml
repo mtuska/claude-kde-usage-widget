@@ -39,6 +39,16 @@ PlasmoidItem {
     readonly property int workingCount: sessionData ? (sessionData.working || 0) : 0
     readonly property int agentCount: sessionData ? (sessionData.agents || 0) : 0
 
+    // Local token usage / estimated cost from transcripts (free, no token cost).
+    property var usageData: null
+    readonly property real ratePerHour: usageData ? (usageData.rate_per_hour || 0) : 0
+
+    // Notification threshold (fraction). Rising-edge tracked below.
+    readonly property real notifyThreshold: 0.9
+    property bool notified5h: false
+    property bool notified7d: false
+    property string notifiedIncidentKey: ""
+
     readonly property var h5: limitData ? limitData.h5 : null
     readonly property var d7: limitData ? limitData.d7 : null
     readonly property bool hasData: limitData !== null
@@ -50,6 +60,7 @@ PlasmoidItem {
     readonly property string scriptPath: Qt.resolvedUrl("../code/fetch_limits.sh").toString().replace("file://", "")
     readonly property string statusScriptPath: Qt.resolvedUrl("../code/fetch_status.sh").toString().replace("file://", "")
     readonly property string sessionScriptPath: Qt.resolvedUrl("../code/fetch_sessions.sh").toString().replace("file://", "")
+    readonly property string usageScriptPath: Qt.resolvedUrl("../code/fetch_usage.sh").toString().replace("file://", "")
 
     P5Support.DataSource {
         id: executable
@@ -76,6 +87,7 @@ PlasmoidItem {
                     root.errorMsg = ""
                     var now = new Date()
                     root.lastUpdated = now.getHours() + ":" + String(now.getMinutes()).padStart(2, "0")
+                    root.checkLimitNotifications()
                 }
             } catch(e) {
                 root.errorMsg = "Parse error: " + stdout.substring(0, 80)
@@ -113,6 +125,7 @@ PlasmoidItem {
                 } else {
                     root.statusData = parsed
                     root.statusError = ""
+                    root.checkIncidentNotifications()
                 }
             } catch(e) {
                 root.statusError = "Status parse error"
@@ -149,6 +162,78 @@ PlasmoidItem {
         sessionExecutable.connectSource("bash '" + safePath + "'")
     }
 
+    P5Support.DataSource {
+        id: usageExecutable
+        engine: "executable"
+        connectedSources: []
+        onNewData: function(source, data) {
+            disconnectSource(source)
+            var stdout = (data["stdout"] || "").trim()
+            if (!stdout) return
+            try {
+                var parsed = JSON.parse(stdout)
+                if (!parsed.error) root.usageData = parsed
+            } catch(e) {
+                // Best-effort; ignore transient parse errors.
+            }
+        }
+    }
+
+    function fetchUsage() {
+        var safePath = root.usageScriptPath.replace(/'/g, "'\\''")
+        var h5Reset = (root.h5 && root.h5.reset_ts) ? root.h5.reset_ts : "0"
+        var d7Reset = (root.d7 && root.d7.reset_ts) ? root.d7.reset_ts : "0"
+        usageExecutable.connectSource("bash '" + safePath + "' '" + h5Reset + "' '" + d7Reset + "'")
+    }
+
+    // Fire-and-forget desktop notifications via notify-send.
+    P5Support.DataSource {
+        id: notifier
+        engine: "executable"
+        connectedSources: []
+        onNewData: function(source, data) { disconnectSource(source) }
+    }
+
+    function notify(title, body) {
+        var t = String(title).replace(/'/g, "'\\''")
+        var b = String(body).replace(/'/g, "'\\''")
+        notifier.connectSource("notify-send -a 'Claude Limits' -i dialog-information '" + t + "' '" + b + "'")
+    }
+
+    // Rising-edge notification checks: fire once per crossing, re-arm on recovery.
+    function checkLimitNotifications() {
+        if (root.h5) {
+            if (root.h5.utilization >= root.notifyThreshold && !root.notified5h) {
+                root.notified5h = true
+                root.notify("Claude 5-hour limit high",
+                            Math.round(root.h5.utilization * 100) + "% used")
+            } else if (root.h5.utilization < root.notifyThreshold) {
+                root.notified5h = false
+            }
+        }
+        if (root.d7) {
+            if (root.d7.utilization >= root.notifyThreshold && !root.notified7d) {
+                root.notified7d = true
+                root.notify("Claude 7-day limit high",
+                            Math.round(root.d7.utilization * 100) + "% used")
+            } else if (root.d7.utilization < root.notifyThreshold) {
+                root.notified7d = false
+            }
+        }
+    }
+
+    function checkIncidentNotifications() {
+        if (root.incidents.length > 0) {
+            var key = root.incidents.map(function(i) { return i.name }).join("|")
+            if (key !== root.notifiedIncidentKey) {
+                root.notifiedIncidentKey = key
+                root.notify("Claude service incident", root.incidents[0].name)
+            }
+        } else {
+            root.notifiedIncidentKey = ""
+        }
+    }
+
     Timer {
         interval: root.effectiveInterval * 60 * 1000
         running: true
@@ -182,6 +267,15 @@ PlasmoidItem {
         repeat: true
         triggeredOnStart: true
         onTriggered: root.fetchSessions()
+    }
+
+    // Token usage / cost parses the transcripts (~0.5s); poll it once a minute.
+    Timer {
+        interval: 60 * 1000
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: root.fetchUsage()
     }
 
     // ── Compact (panel bar) ──────────────────────────────────────────────────
@@ -274,11 +368,13 @@ PlasmoidItem {
 
     // ── Full popup ───────────────────────────────────────────────────────────
     fullRepresentation: Item {
-        readonly property int popupWidth: 260
-        // Grow to fit the status line, the activity line, and one row per incident.
-        readonly property int popupHeight: 215
+        readonly property int popupWidth: 270
+        // Grow to fit the status line, activity line, per-window estimate lines,
+        // the Today line, and one row per incident.
+        readonly property int popupHeight: 250
             + root.incidents.length * 16
             + (root.sessionCount > 0 ? 18 : 0)
+            + (root.usageData ? 34 : 0)
 
         implicitWidth: popupWidth
         implicitHeight: popupHeight
@@ -402,6 +498,8 @@ PlasmoidItem {
                     Layout.fillWidth: true
                     label: "5-hour window"
                     windowData: root.h5
+                    windowTokens: root.usageData ? (root.usageData.window_5h_tokens || 0) : 0
+                    ratePerHour: root.ratePerHour
                 }
 
                 Item { Layout.fillHeight: true }
@@ -410,6 +508,8 @@ PlasmoidItem {
                     Layout.fillWidth: true
                     label: "7-day window"
                     windowData: root.d7
+                    windowTokens: root.usageData ? (root.usageData.window_7d_tokens || 0) : 0
+                    ratePerHour: root.ratePerHour
                 }
 
                 Item { Layout.fillHeight: true }
@@ -437,6 +537,36 @@ PlasmoidItem {
                                : Kirigami.Theme.neutralTextColor
                     }
                 }
+            }
+
+            // Today's local token usage + estimated (API-equivalent) cost.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                visible: root.usageData && root.usageData.today && root.usageData.today.total > 0
+
+                PlasmaComponents.Label {
+                    text: "Today"
+                    font.pixelSize: 11
+                    font.bold: true
+                    opacity: 0.8
+                }
+                PlasmaComponents.Label {
+                    text: root.usageData ? Utils.fmtTokens(root.usageData.today.total) + " tok" : ""
+                    font.pixelSize: 11
+                }
+                PlasmaComponents.Label {
+                    text: root.usageData && root.usageData.today.cost
+                          ? "· ~$" + root.usageData.today.cost.toFixed(2)
+                          : ""
+                    font.pixelSize: 11
+                    opacity: 0.7
+                    QQC2.ToolTip.text: "Estimated pay-as-you-go equivalent — not billed on a subscription"
+                    QQC2.ToolTip.visible: hovered
+                    property bool hovered: usageMouse.containsMouse
+                    MouseArea { id: usageMouse; anchors.fill: parent; hoverEnabled: true }
+                }
+                Item { Layout.fillWidth: true }
             }
 
             // Footer: plan · interval · last update

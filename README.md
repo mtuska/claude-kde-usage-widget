@@ -6,8 +6,11 @@ Displays two windows: 5-hour and 7-day, each with a usage bar, utilization perce
 also shows Claude's service status and any active incidents pulled from
 [status.claude.com](https://status.claude.com/), so you stay aware of outages; the panel view flags a degraded status
 with a colored dot. It also counts the Claude Code sessions running **on this machine** — how many are open, how many
-are actively working right now, and how many sub-agents are running. Compact view lives in the panel; click to open the
-full popup.
+are actively working right now, and how many sub-agents are running. From the local transcripts it derives today's
+token usage and an estimated (pay-as-you-go equivalent) cost, and — by dividing tokens used in a window by the server's
+reported utilization — an **estimated ceiling** for each limit plus a burn-rate ETA to when you'd hit it. Optional
+desktop notifications fire when a window crosses 90% or when a Claude incident opens. Compact view lives in the panel;
+click to open the full popup.
 
 **KDE Store:** https://www.opendesktop.org/p/2359310
 
@@ -29,13 +32,22 @@ incidents. That request is unauthenticated and **does not cost any tokens**.
 
 It also scans `~/.claude` every 10 seconds to count local Claude Code activity: running sessions
 (`~/.claude/sessions/*.json` with a live PID), how many have written transcript output in the last ~45 seconds
-("working"), and how many sub-agent transcripts are currently active. This is a purely local filesystem read — no
-network, no tokens — and only sees sessions on this machine, not chats on claude.ai or other devices.
+("working"), and how many sub-agent transcripts are currently active. Once a minute it parses the transcript `usage`
+fields to total today's tokens and estimate cost, and sums per-window tokens for the ceiling/ETA estimates. Both are
+purely local filesystem reads — no network, no tokens — and only see activity on this machine, not chats on claude.ai
+or other devices.
+
+> **Estimates are rough.** The "estimated ceiling" divides your local token sum by the server's utilization; Anthropic
+> weights tokens (especially cache reads) differently, so treat it as a ballpark. The "$" cost is the equivalent
+> pay-as-you-go price of those tokens — on a Max/Pro subscription you are **not** billed it.
+
+Desktop notifications use `notify-send` and fire on a rising edge (once per crossing, re-armed on recovery).
 
 ## Requirements
 
 - KDE Plasma 6
 - `curl`, `python3`, `bash`
+- `libnotify` (`notify-send`) for desktop notifications — optional
 - An active Claude account with Claude Code installed (provides `~/.claude/.credentials.json`)
 
 ## Installation
