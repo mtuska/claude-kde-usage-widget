@@ -68,18 +68,26 @@ ColumnLayout {
     readonly property bool hasEstimate: windowTokens > 0 && utilization > 0.01
     readonly property real estimatedCeiling: hasEstimate ? windowTokens / utilization : 0
 
-    // ETA to the limit at the current burn rate, capped at the window reset.
+    // ETA to the limit at the current burn rate (time to exhaust the estimated
+    // remaining budget). Shown on both windows; for the short 5-hour "session"
+    // window the reset usually arrives first, which we flag rather than hide.
     readonly property real etaHours: (hasEstimate && ratePerHour > 0)
         ? Math.max(estimatedCeiling - windowTokens, 0) / ratePerHour : 0
     readonly property real hoursToReset: diffMs > 0 ? diffMs / 3600000 : 0
-    // Only meaningful if the limit would be hit before the window resets.
+    // Urgent case: the limit would be hit before the window resets.
     readonly property bool etaBeforeReset: etaHours > 0 && hoursToReset > 0 && etaHours < hoursToReset
 
-    readonly property string estimateLabel: {
-        if (!hasEstimate) return ""
-        var t = "~" + Utils.fmtTokens(windowTokens) + " / ~" + Utils.fmtTokens(estimatedCeiling) + " tok"
-        if (etaBeforeReset)
-            t += " · full in ~" + Utils.fmtHours(etaHours)
+    // Estimated used / ceiling, shown next to "Resets".
+    readonly property string ceilingLabel: hasEstimate
+        ? "~" + Utils.fmtTokens(windowTokens) + " / ~" + Utils.fmtTokens(estimatedCeiling) + " tok"
+        : ""
+
+    // Burn-rate ETA, on its own line so it has room. "(resets first)" flags the
+    // common session case where the window resets before you'd hit the cap.
+    readonly property string etaLabel: {
+        if (!hasEstimate || etaHours <= 0) return ""
+        var t = "full in ~" + Utils.fmtHours(etaHours)
+        if (!etaBeforeReset) t += " (resets first)"
         return t
     }
 
@@ -142,13 +150,24 @@ ColumnLayout {
 
         Item { Layout.fillWidth: true }
 
-        // Estimated used / ceiling (+ ETA to limit at current burn).
+        // Estimated used / ceiling.
         PlasmaComponents.Label {
-            text: root.estimateLabel
+            text: root.ceilingLabel
             font.pixelSize: 10
             opacity: 0.7
-            color: root.etaBeforeReset ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.textColor
             visible: root.hasEstimate && root.showEstimate
         }
+    }
+
+    // Burn-rate ETA on its own line (shown for both windows).
+    PlasmaComponents.Label {
+        Layout.fillWidth: true
+        horizontalAlignment: Text.AlignRight
+        text: root.etaLabel
+        font.pixelSize: 10
+        opacity: 0.7
+        elide: Text.ElideRight
+        color: root.etaBeforeReset ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.textColor
+        visible: root.hasEstimate && root.showEstimate && root.etaLabel !== ""
     }
 }
