@@ -119,6 +119,9 @@ result = {
     "fallback": get("anthropic-ratelimit-unified-fallback"),
     "fallback_pct": get("anthropic-ratelimit-unified-fallback-percentage"),
     "representative_claim": get("anthropic-ratelimit-unified-representative-claim"),
+    # "Usage credits" in the Claude UI: whether spend past the limit is allowed.
+    "overage_status": get("anthropic-ratelimit-unified-overage-status"),
+    "overage_reason": get("anthropic-ratelimit-unified-overage-disabled-reason"),
     "h5": window("5h"),
     "d7": window("7d"),
     "plan": os.environ.get("SUBSCRIPTION_TYPE", ""),

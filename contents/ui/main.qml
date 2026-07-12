@@ -39,15 +39,72 @@ PlasmoidItem {
     readonly property int workingCount: sessionData ? (sessionData.working || 0) : 0
     readonly property int agentCount: sessionData ? (sessionData.agents || 0) : 0
 
+    // Service status extras
+    readonly property var maintenances: statusData && statusData.maintenances ? statusData.maintenances : []
+    readonly property var statusComponents: statusData && statusData.components ? statusData.components : []
+    readonly property bool componentsDegraded: {
+        for (var i = 0; i < statusComponents.length; i++)
+            if ((statusComponents[i].status || "operational") !== "operational") return true
+        return false
+    }
+
+    // Usage credits (overage): whether spend past the limit is allowed.
+    readonly property string overageStatus: limitData ? (limitData.overage_status || "") : ""
+
     // Local token usage / estimated cost from transcripts (free, no token cost).
     property var usageData: null
     readonly property real ratePerHour: usageData ? (usageData.rate_per_hour || 0) : 0
+    readonly property var byModel: usageData && usageData.by_model ? usageData.by_model : ({})
+    readonly property var daily: usageData && usageData.daily ? usageData.daily : []
+    readonly property real cacheRatio: {
+        if (!usageData || !usageData.today) return 0
+        var t = usageData.today.total
+        return t > 0 ? usageData.today.cache_read / t : 0
+    }
+    readonly property real maxDaily: {
+        var m = 0
+        for (var i = 0; i < daily.length; i++) if (daily[i] > m) m = daily[i]
+        return m
+    }
+    readonly property string modelBreakdown: {
+        var total = (usageData && usageData.today) ? usageData.today.total : 0
+        if (!total) return ""
+        var keys = Object.keys(byModel)
+        keys.sort(function(a, b) { return byModel[b] - byModel[a] })
+        var parts = []
+        for (var i = 0; i < keys.length && i < 4; i++)
+            parts.push(keys[i] + " " + Math.round(byModel[keys[i]] / total * 100) + "%")
+        return parts.join(" · ")
+    }
+    readonly property bool overageAvailable: overageStatus === "allowed"
+    readonly property string overageLabel: overageStatus ? (overageAvailable ? "available" : "disabled") : ""
 
-    // Notification threshold (fraction). Rising-edge tracked below.
-    readonly property real notifyThreshold: 0.9
+    // ── Configuration (with sensible fallbacks) ───────────────────────────────
+    readonly property bool cfgShowStatus:      Plasmoid.configuration.showStatus !== false
+    readonly property bool cfgShowMaintenance: Plasmoid.configuration.showMaintenance !== false
+    readonly property bool cfgShowComponents:  Plasmoid.configuration.showComponents === true
+    readonly property bool cfgShowSessions:    Plasmoid.configuration.showSessions !== false
+    readonly property bool cfgShowUsage:       Plasmoid.configuration.showUsage !== false
+    readonly property bool cfgShowEstimates:   Plasmoid.configuration.showEstimates !== false
+    readonly property int  cfgStatusInterval:  Math.max(1, Plasmoid.configuration.statusInterval || 2)
+    readonly property int  cfgSessionInterval: Math.max(3, Plasmoid.configuration.sessionInterval || 10)
+    readonly property int  cfgUsageInterval:   Math.max(15, Plasmoid.configuration.usageInterval || 60)
+
+    readonly property bool cfgNotify5h:          Plasmoid.configuration.notify5h !== false
+    readonly property bool cfgNotify7d:          Plasmoid.configuration.notify7d !== false
+    readonly property bool cfgNotifyLimit:       Plasmoid.configuration.notifyLimitReached !== false
+    readonly property bool cfgNotifyIncident:    Plasmoid.configuration.notifyIncident !== false
+    readonly property bool cfgNotifyMaintenance: Plasmoid.configuration.notifyMaintenance === true
+    readonly property real cfgThreshold5h:       (Plasmoid.configuration.notify5hThreshold || 90) / 100
+    readonly property real cfgThreshold7d:       (Plasmoid.configuration.notify7dThreshold || 90) / 100
+
+    // Rising-edge notification state.
     property bool notified5h: false
     property bool notified7d: false
+    property bool notifiedLimit5h: false
+    property bool notifiedLimit7d: false
     property string notifiedIncidentKey: ""
+    property string notifiedMaintKey: ""
 
     readonly property var h5: limitData ? limitData.h5 : null
     readonly property var d7: limitData ? limitData.d7 : null
@@ -126,6 +183,7 @@ PlasmoidItem {
                     root.statusData = parsed
                     root.statusError = ""
                     root.checkIncidentNotifications()
+                    root.checkMaintenanceNotifications()
                 }
             } catch(e) {
                 root.statusError = "Status parse error"
@@ -201,36 +259,56 @@ PlasmoidItem {
     }
 
     // Rising-edge notification checks: fire once per crossing, re-arm on recovery.
-    function checkLimitNotifications() {
-        if (root.h5) {
-            if (root.h5.utilization >= root.notifyThreshold && !root.notified5h) {
-                root.notified5h = true
-                root.notify("Claude 5-hour limit high",
-                            Math.round(root.h5.utilization * 100) + "% used")
-            } else if (root.h5.utilization < root.notifyThreshold) {
-                root.notified5h = false
+    function checkWindow(win, enabled, threshold, notifiedProp, notifiedLimitProp, label) {
+        if (!win) return
+        var util = win.utilization
+        var reached = util >= 1.0 || Utils.isLimited(win.status || "")
+        // Threshold-crossing notification.
+        if (enabled) {
+            if (util >= threshold && !root[notifiedProp]) {
+                root[notifiedProp] = true
+                root.notify("Claude " + label + " limit high", Math.round(util * 100) + "% used")
+            } else if (util < threshold) {
+                root[notifiedProp] = false
             }
         }
-        if (root.d7) {
-            if (root.d7.utilization >= root.notifyThreshold && !root.notified7d) {
-                root.notified7d = true
-                root.notify("Claude 7-day limit high",
-                            Math.round(root.d7.utilization * 100) + "% used")
-            } else if (root.d7.utilization < root.notifyThreshold) {
-                root.notified7d = false
+        // "Full usage" / limit-reached notification.
+        if (root.cfgNotifyLimit) {
+            if (reached && !root[notifiedLimitProp]) {
+                root[notifiedLimitProp] = true
+                root.notify("Claude " + label + " limit reached", "Window is fully used (100%)")
+            } else if (!reached) {
+                root[notifiedLimitProp] = false
             }
         }
     }
 
+    function checkLimitNotifications() {
+        checkWindow(root.h5, root.cfgNotify5h, root.cfgThreshold5h, "notified5h", "notifiedLimit5h", "5-hour")
+        checkWindow(root.d7, root.cfgNotify7d, root.cfgThreshold7d, "notified7d", "notifiedLimit7d", "7-day")
+    }
+
     function checkIncidentNotifications() {
-        if (root.incidents.length > 0) {
+        if (root.cfgNotifyIncident && root.incidents.length > 0) {
             var key = root.incidents.map(function(i) { return i.name }).join("|")
             if (key !== root.notifiedIncidentKey) {
                 root.notifiedIncidentKey = key
                 root.notify("Claude service incident", root.incidents[0].name)
             }
-        } else {
+        } else if (root.incidents.length === 0) {
             root.notifiedIncidentKey = ""
+        }
+    }
+
+    function checkMaintenanceNotifications() {
+        if (root.cfgNotifyMaintenance && root.maintenances.length > 0) {
+            var key = root.maintenances.map(function(m) { return m.name }).join("|")
+            if (key !== root.notifiedMaintKey) {
+                root.notifiedMaintKey = key
+                root.notify("Claude scheduled maintenance", root.maintenances[0].name)
+            }
+        } else if (root.maintenances.length === 0) {
+            root.notifiedMaintKey = ""
         }
     }
 
@@ -252,8 +330,8 @@ PlasmoidItem {
     // Service status is free to poll, so refresh it on a fixed short cadence
     // regardless of the (token-burning) limits refresh interval.
     Timer {
-        interval: 2 * 60 * 1000
-        running: true
+        interval: root.cfgStatusInterval * 60 * 1000
+        running: root.cfgShowStatus
         repeat: true
         triggeredOnStart: true
         onTriggered: root.fetchStatus()
@@ -262,17 +340,17 @@ PlasmoidItem {
     // Local session activity is a cheap filesystem scan; poll it often so the
     // "working" count feels live.
     Timer {
-        interval: 10 * 1000
-        running: true
+        interval: root.cfgSessionInterval * 1000
+        running: root.cfgShowSessions
         repeat: true
         triggeredOnStart: true
         onTriggered: root.fetchSessions()
     }
 
-    // Token usage / cost parses the transcripts (~0.5s); poll it once a minute.
+    // Token usage / cost parses the transcripts (~0.5s).
     Timer {
-        interval: 60 * 1000
-        running: true
+        interval: root.cfgUsageInterval * 1000
+        running: root.cfgShowUsage
         repeat: true
         triggeredOnStart: true
         onTriggered: root.fetchUsage()
@@ -315,7 +393,7 @@ PlasmoidItem {
             // Service-status warning: only shown when Claude is degraded.
             Row {
                 spacing: 3
-                visible: root.statusDegraded
+                visible: root.cfgShowStatus && (root.statusDegraded || root.componentsDegraded)
 
                 Rectangle {
                     width: 6
@@ -341,7 +419,7 @@ PlasmoidItem {
             // "+N" agent tally), shown only when something is actively working.
             Row {
                 spacing: 3
-                visible: root.workingCount > 0 || root.agentCount > 0
+                visible: root.cfgShowSessions && (root.workingCount > 0 || root.agentCount > 0)
 
                 Rectangle {
                     width: 6
@@ -368,27 +446,23 @@ PlasmoidItem {
 
     // ── Full popup ───────────────────────────────────────────────────────────
     fullRepresentation: Item {
-        readonly property int popupWidth: 270
-        // Grow to fit the status line, activity line, per-window estimate lines,
-        // the Today line, and one row per incident.
-        readonly property int popupHeight: 250
-            + root.incidents.length * 16
-            + (root.sessionCount > 0 ? 18 : 0)
-            + (root.usageData ? 34 : 0)
+        readonly property int popupWidth: 280
 
+        // Content-sized: height follows the visible sections so toggling
+        // components in config resizes the popup instead of clipping.
         implicitWidth: popupWidth
-        implicitHeight: popupHeight
+        implicitHeight: popupCol.implicitHeight + 2 * Kirigami.Units.largeSpacing
 
         Layout.minimumWidth: popupWidth
         Layout.preferredWidth: popupWidth
-        Layout.minimumHeight: popupHeight
-        Layout.preferredHeight: popupHeight
-        Layout.maximumHeight: popupHeight
+        Layout.minimumHeight: implicitHeight
+        Layout.preferredHeight: implicitHeight
 
         ColumnLayout {
+            id: popupCol
             anchors.fill: parent
             anchors.margins: Kirigami.Units.largeSpacing
-            spacing: Kirigami.Units.largeSpacing
+            spacing: Kirigami.Units.smallSpacing
 
             // Title — first item in layout, always at top
             RowLayout {
@@ -417,14 +491,77 @@ PlasmoidItem {
                 description: root.statusData ? (root.statusData.description || "") : ""
                 incidents: root.incidents
                 errorText: root.statusError
-                visible: hasStatus
+                visible: root.cfgShowStatus && hasStatus
+            }
+
+            // Scheduled maintenance windows
+            Repeater {
+                model: (root.cfgShowStatus && root.cfgShowMaintenance) ? root.maintenances : []
+                RowLayout {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Kirigami.Icon {
+                        source: "tools"
+                        Layout.preferredWidth: 12
+                        Layout.preferredHeight: 12
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+                    PlasmaComponents.Label {
+                        Layout.fillWidth: true
+                        text: modelData.name || "Scheduled maintenance"
+                        font.pixelSize: 10
+                        color: Kirigami.Theme.neutralTextColor
+                        elide: Text.ElideRight
+                    }
+                }
+            }
+
+            // Per-component status list
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 1
+                visible: root.cfgShowStatus && root.cfgShowComponents && root.statusComponents.length > 0
+
+                Repeater {
+                    model: root.statusComponents
+                    RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Rectangle {
+                            Layout.preferredWidth: 6
+                            Layout.preferredHeight: 6
+                            radius: 3
+                            Layout.alignment: Qt.AlignVCenter
+                            color: (modelData.status === "operational")
+                                   ? Kirigami.Theme.positiveTextColor
+                                   : Kirigami.Theme.neutralTextColor
+                        }
+                        PlasmaComponents.Label {
+                            Layout.fillWidth: true
+                            text: modelData.name
+                            font.pixelSize: 10
+                            opacity: 0.8
+                            elide: Text.ElideRight
+                        }
+                        PlasmaComponents.Label {
+                            text: modelData.status
+                            font.pixelSize: 9
+                            opacity: 0.7
+                            color: (modelData.status === "operational")
+                                   ? Kirigami.Theme.textColor
+                                   : Kirigami.Theme.neutralTextColor
+                        }
+                    }
+                }
             }
 
             // Local Claude Code activity on this machine
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
-                visible: root.sessionCount > 0
+                visible: root.cfgShowSessions && root.sessionCount > 0
 
                 Kirigami.Icon {
                     source: "utilities-terminal"
@@ -465,11 +602,10 @@ PlasmoidItem {
                 visible: root.errorMsg !== "" && !root.loading
             }
 
-            // Placeholder fills the bars' space before first data arrives,
-            // keeping title at top and footer at bottom
+            // Placeholder before first data arrives
             Item {
                 Layout.fillWidth: true
-                Layout.fillHeight: true
+                Layout.preferredHeight: 70
                 visible: !root.hasData
 
                 PlasmaComponents.BusyIndicator {
@@ -486,87 +622,131 @@ PlasmoidItem {
                 }
             }
 
-            ColumnLayout {
+            LimitRow {
                 Layout.fillWidth: true
-                Layout.fillHeight: true
-                spacing: 0
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                label: "5-hour window"
+                windowData: root.h5
+                windowTokens: root.usageData ? (root.usageData.window_5h_tokens || 0) : 0
+                ratePerHour: root.ratePerHour
+                showEstimate: root.cfgShowEstimates
                 visible: root.hasData
-
-                Item { Layout.fillHeight: true }
-
-                LimitRow {
-                    Layout.fillWidth: true
-                    label: "5-hour window"
-                    windowData: root.h5
-                    windowTokens: root.usageData ? (root.usageData.window_5h_tokens || 0) : 0
-                    ratePerHour: root.ratePerHour
-                }
-
-                Item { Layout.fillHeight: true }
-
-                LimitRow {
-                    Layout.fillWidth: true
-                    label: "7-day window"
-                    windowData: root.d7
-                    windowTokens: root.usageData ? (root.usageData.window_7d_tokens || 0) : 0
-                    ratePerHour: root.ratePerHour
-                }
-
-                Item { Layout.fillHeight: true }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: root.limitData && root.limitData.fallback
-
-                    PlasmaComponents.Label {
-                        text: "Fallback:"
-                        opacity: 0.7
-                        font.pixelSize: 11
-                    }
-                    PlasmaComponents.Label {
-                        text: {
-                            if (!root.limitData) return ""
-                            var t = root.limitData.fallback || ""
-                            if (root.limitData.fallback_pct)
-                                t += " (" + Math.round(parseFloat(root.limitData.fallback_pct) * 100) + "% capacity)"
-                            return t
-                        }
-                        font.pixelSize: 11
-                        color: (root.limitData && root.limitData.fallback === "available")
-                               ? Kirigami.Theme.positiveTextColor
-                               : Kirigami.Theme.neutralTextColor
-                    }
-                }
             }
 
-            // Today's local token usage + estimated (API-equivalent) cost.
+            LimitRow {
+                Layout.fillWidth: true
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                label: "7-day window"
+                windowData: root.d7
+                windowTokens: root.usageData ? (root.usageData.window_7d_tokens || 0) : 0
+                ratePerHour: root.ratePerHour
+                showEstimate: root.cfgShowEstimates
+                visible: root.hasData
+            }
+
+            // Usage credits (overage) + fallback capacity
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
-                visible: root.usageData && root.usageData.today && root.usageData.today.total > 0
+                visible: root.hasData
+                         && (root.overageLabel !== "" || (root.limitData && root.limitData.fallback))
 
                 PlasmaComponents.Label {
-                    text: "Today"
-                    font.pixelSize: 11
-                    font.bold: true
-                    opacity: 0.8
-                }
-                PlasmaComponents.Label {
-                    text: root.usageData ? Utils.fmtTokens(root.usageData.today.total) + " tok" : ""
-                    font.pixelSize: 11
-                }
-                PlasmaComponents.Label {
-                    text: root.usageData && root.usageData.today.cost
-                          ? "· ~$" + root.usageData.today.cost.toFixed(2)
-                          : ""
-                    font.pixelSize: 11
+                    text: "Usage credits:"
                     opacity: 0.7
-                    QQC2.ToolTip.text: "Estimated pay-as-you-go equivalent — not billed on a subscription"
-                    QQC2.ToolTip.visible: hovered
-                    property bool hovered: usageMouse.containsMouse
-                    MouseArea { id: usageMouse; anchors.fill: parent; hoverEnabled: true }
+                    font.pixelSize: 11
+                    visible: root.overageLabel !== ""
+                }
+                PlasmaComponents.Label {
+                    text: root.overageLabel
+                    font.pixelSize: 11
+                    visible: root.overageLabel !== ""
+                    color: root.overageAvailable ? Kirigami.Theme.positiveTextColor
+                                                  : Kirigami.Theme.neutralTextColor
                 }
                 Item { Layout.fillWidth: true }
+                PlasmaComponents.Label {
+                    text: (root.limitData && root.limitData.fallback) ? "Fallback: " + root.limitData.fallback : ""
+                    font.pixelSize: 11
+                    opacity: 0.7
+                    visible: root.limitData && root.limitData.fallback
+                    color: (root.limitData && root.limitData.fallback === "available")
+                           ? Kirigami.Theme.positiveTextColor
+                           : Kirigami.Theme.neutralTextColor
+                }
+            }
+
+            // Token usage: Today total/cost/cache, per-model split, 7-day sparkline
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                spacing: 1
+                visible: root.cfgShowUsage && root.usageData
+                         && root.usageData.today && root.usageData.today.total > 0
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    PlasmaComponents.Label { text: "Today"; font.pixelSize: 11; font.bold: true; opacity: 0.8 }
+                    PlasmaComponents.Label {
+                        text: root.usageData ? Utils.fmtTokens(root.usageData.today.total) + " tok" : ""
+                        font.pixelSize: 11
+                    }
+                    PlasmaComponents.Label {
+                        text: (root.usageData && root.usageData.today.cost) ? "· ~$" + root.usageData.today.cost.toFixed(2) : ""
+                        font.pixelSize: 11
+                        opacity: 0.7
+                        QQC2.ToolTip.text: "Estimated pay-as-you-go equivalent — not billed on a subscription"
+                        QQC2.ToolTip.visible: costMouse.containsMouse
+                        MouseArea { id: costMouse; anchors.fill: parent; hoverEnabled: true }
+                    }
+                    Item { Layout.fillWidth: true }
+                    PlasmaComponents.Label {
+                        text: root.cacheRatio > 0 ? Math.round(root.cacheRatio * 100) + "% cached" : ""
+                        font.pixelSize: 10
+                        opacity: 0.6
+                    }
+                }
+
+                PlasmaComponents.Label {
+                    Layout.fillWidth: true
+                    text: root.modelBreakdown
+                    font.pixelSize: 10
+                    opacity: 0.7
+                    visible: root.modelBreakdown !== ""
+                    elide: Text.ElideRight
+                }
+
+                // 7-day usage sparkline (today highlighted)
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 2
+                    spacing: 4
+                    visible: root.daily.length === 7 && root.maxDaily > 0
+
+                    PlasmaComponents.Label { text: "7d"; font.pixelSize: 9; opacity: 0.6; Layout.alignment: Qt.AlignBottom }
+
+                    Row {
+                        Layout.fillWidth: true
+                        height: 20
+                        spacing: 3
+                        Repeater {
+                            model: root.daily
+                            Rectangle {
+                                required property var modelData
+                                required property int index
+                                width: 12
+                                height: Math.max((modelData / root.maxDaily) * 18, 2)
+                                anchors.bottom: parent.bottom
+                                radius: 2
+                                color: Kirigami.Theme.highlightColor
+                                opacity: index === 6 ? 1.0 : 0.45
+                            }
+                        }
+                    }
+
+                    PlasmaComponents.Label { text: "today"; font.pixelSize: 9; opacity: 0.5; Layout.alignment: Qt.AlignBottom }
+                }
             }
 
             // Footer: plan · interval · last update

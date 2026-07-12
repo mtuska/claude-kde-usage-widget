@@ -16,6 +16,7 @@ ColumnLayout {
     // from fetch_usage.sh — used to estimate the hidden ceiling and ETA.
     property real windowTokens: 0
     property real ratePerHour: 0
+    property bool showEstimate: true
 
     readonly property real utilization: windowData ? windowData.utilization : 0
     readonly property string status: windowData ? (windowData.status || "") : ""
@@ -147,7 +148,7 @@ ColumnLayout {
             font.pixelSize: 10
             opacity: 0.7
             color: root.etaBeforeReset ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.textColor
-            visible: root.hasEstimate
+            visible: root.hasEstimate && root.showEstimate
         }
     }
 }

@@ -31,9 +31,10 @@ h5_start = max(h5_reset - 5 * 3600, now - 5 * 3600) if h5_reset > 0 else now - 5
 d7_start = max(d7_reset - 7 * 86400, now - 7 * 86400) if d7_reset > 0 else now - 7 * 86400
 hour_start = now - 3600
 
-# Local midnight (today) in epoch seconds.
+# Local midnight (today) in epoch seconds, and the start of the 7-day window.
 lt = time.localtime(now)
 midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+week_start = midnight - 6 * 86400  # start of the oldest day shown in the sparkline
 
 # Per-model pricing, $ per token (input, output, cache-write 5m, cache-read).
 PRICES = {
@@ -63,6 +64,15 @@ today = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0, "cost": 0.0
 w5 = 0      # total tokens in the 5h window
 w7 = 0      # total tokens in the 7d window
 rate = 0    # total tokens in the last hour
+by_model = {}   # today's total tokens per (friendly) model name
+daily = [0] * 7  # total tokens per day for the last 7 days (index 0 = oldest)
+
+def model_family(model):
+    m = (model or "").lower()
+    for k in ("opus", "sonnet", "haiku", "fable", "mythos"):
+        if k in m:
+            return k.capitalize()
+    return "Other"
 
 # Only files touched in the last 7 days can contain in-window records.
 cutoff = now - 7 * 86400 - 60
@@ -103,6 +113,14 @@ for path in glob.glob(os.path.join(proj, "**", "*.jsonl"), recursive=True):
                 w5 += total
             if t >= hour_start:
                 rate += total
+
+            # Daily buckets for the sparkline (index 0 = 6 days ago, 6 = today).
+            if t >= week_start:
+                di = int((t - week_start) // 86400)
+                if di > 6:
+                    di = 6
+                daily[di] += total
+
             if t >= midnight:
                 today["input"] += i
                 today["output"] += o
@@ -110,6 +128,8 @@ for path in glob.glob(os.path.join(proj, "**", "*.jsonl"), recursive=True):
                 today["cache_read"] += cr
                 pi, po, pcw, pcr = price(msg.get("model"))
                 today["cost"] += i * pi + o * po + cw * pcw + cr * pcr
+                fam = model_family(msg.get("model"))
+                by_model[fam] = by_model.get(fam, 0) + total
 
 print(json.dumps({
     "today": {
@@ -123,5 +143,7 @@ print(json.dumps({
     "window_5h_tokens": w5,
     "window_7d_tokens": w7,
     "rate_per_hour": rate,
+    "by_model": by_model,
+    "daily": daily,
 }))
 PYEOF

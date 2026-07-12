@@ -4,10 +4,17 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
 Kirigami.FormLayout {
-    property alias cfg_refreshInterval: refreshSpinBox.value
     property alias cfg_showTitle: showTitleCheck.checked
+    property bool cfg_showTitleDefault: true
+
+    property alias cfg_refreshInterval: refreshSpinBox.value
+    property int cfg_refreshIntervalDefault: 15
+
     property string cfg_proxyMode: "env"
+    property string cfg_proxyModeDefault: "env"
+
     property alias cfg_proxyUrl: proxyUrlField.text
+    property string cfg_proxyUrlDefault: ""
 
     // ── Appearance ────────────────────────────────────────────────────────────
     Kirigami.Heading {
@@ -19,11 +26,12 @@ Kirigami.FormLayout {
     QQC2.CheckBox {
         id: showTitleCheck
         Kirigami.FormData.label: "Show title:"
+        text: "Show the \"Claude Limits\" heading in the popup"
     }
 
-    // ── Refresh ───────────────────────────────────────────────────────────────
+    // ── Limits refresh ────────────────────────────────────────────────────────
     Kirigami.Heading {
-        text: "Refresh"
+        text: "Rate-limit refresh"
         level: 3
         Kirigami.FormData.isSection: true
     }
@@ -36,6 +44,13 @@ Kirigami.FormLayout {
         value: 15
         textFromValue: function(v) { return v + " min" }
         valueFromText: function(t) { return parseInt(t) || 15 }
+    }
+
+    QQC2.Label {
+        Kirigami.FormData.label: ""
+        text: "Each refresh makes one minimal API call (1 token)."
+        opacity: 0.7
+        font: Kirigami.Theme.smallFont
     }
 
     // ── Proxy ─────────────────────────────────────────────────────────────────

@@ -42,9 +42,31 @@ for it in d.get("incidents", []) or []:
         "shortlink": it.get("shortlink", ""),
     })
 
+maintenances = []
+for m in d.get("scheduled_maintenances", []) or []:
+    if (m.get("status") or "").lower() == "completed":
+        continue  # only surface upcoming / in-progress windows
+    maintenances.append({
+        "name": m.get("name", ""),
+        "status": m.get("status", ""),
+        "scheduled_for": m.get("scheduled_for", ""),
+        "scheduled_until": m.get("scheduled_until", ""),
+    })
+
+components = []
+for c in d.get("components", []) or []:
+    if c.get("group"):
+        continue  # skip group headers, keep leaf components
+    components.append({
+        "name": c.get("name", ""),
+        "status": c.get("status", ""),
+    })
+
 print(json.dumps({
     "indicator": st.get("indicator", ""),
     "description": st.get("description", ""),
     "incidents": incidents,
+    "maintenances": maintenances,
+    "components": components,
 }))
 PYEOF

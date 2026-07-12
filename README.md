@@ -7,10 +7,12 @@ also shows Claude's service status and any active incidents pulled from
 [status.claude.com](https://status.claude.com/), so you stay aware of outages; the panel view flags a degraded status
 with a colored dot. It also counts the Claude Code sessions running **on this machine** — how many are open, how many
 are actively working right now, and how many sub-agents are running. From the local transcripts it derives today's
-token usage and an estimated (pay-as-you-go equivalent) cost, and — by dividing tokens used in a window by the server's
-reported utilization — an **estimated ceiling** for each limit plus a burn-rate ETA to when you'd hit it. Optional
-desktop notifications fire when a window crosses 90% or when a Claude incident opens. Compact view lives in the panel;
-click to open the full popup.
+token usage and an estimated (pay-as-you-go equivalent) cost, a per-model split, cache-hit ratio, a 7-day usage
+sparkline, and — by dividing tokens used in a window by the server's reported utilization — an **estimated ceiling**
+for each limit plus a burn-rate ETA to when you'd hit it. It also surfaces whether **usage credits** (overage) are
+available when you hit a limit, plus scheduled-maintenance windows and per-component status from the status page.
+Everything is individually toggleable, and optional desktop notifications fire on configurable thresholds, on a limit
+being fully reached, or on a new incident/maintenance. Compact view lives in the panel; click to open the full popup.
 
 **KDE Store:** https://www.opendesktop.org/p/2359310
 
@@ -70,13 +72,31 @@ plasmashell --replace &
 
 ## Settings
 
-Right-click the widget → Configure.
+Right-click the widget → Configure. Settings are split across three pages.
 
-| Setting          | Description                                        |
-|------------------|----------------------------------------------------|
-| Show title       | Show/hide the "Claude Limits" heading in the popup |
-| Refresh interval | How often to poll the API (minutes). Default: 15   |
-| Proxy mode       | See below                                          |
+**General** — show/hide the title, the rate-limit refresh interval (minutes; each refresh is one 1-token API
+call), and proxy mode (see below).
+
+**Components** — toggle each feature independently and set its own poll interval:
+
+| Setting | Description |
+|---|---|
+| Status line | Claude service status & incidents (`status.claude.com`) |
+| Scheduled maintenance | Upcoming/in-progress maintenance windows |
+| Per-component status | Operational state of each component (API, Console, Code, …) |
+| Sessions | Local running/working/sub-agent counts (this machine) |
+| Usage | Today's tokens, cost, per-model split, cache-hit %, and 7-day sparkline |
+| Estimated ceiling & ETA | The `used ÷ utilization` ceiling estimate and burn-rate ETA on each limit |
+| Poll intervals | Status (min), sessions (s), usage-scan (s) — status/session/usage scans are local & token-free |
+
+**Notifications** — desktop notifications via `notify-send`, each individually toggleable:
+
+| Setting | Description |
+|---|---|
+| 5-hour / 7-day high | Notify when utilization crosses a configurable threshold (default 90%) |
+| Limit reached | Notify when a window is fully used (100% / LIMITED) |
+| Incidents | Notify when a new Claude incident is reported |
+| Maintenance | Notify when scheduled maintenance is announced (off by default) |
 
 ### Proxy settings
 
