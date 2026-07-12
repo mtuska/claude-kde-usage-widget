@@ -17,13 +17,33 @@ ColumnLayout {
     readonly property string resetIn: windowData ? (windowData.reset_in || "") : ""
     readonly property string resetTs: windowData ? (windowData.reset_ts || "") : ""
 
-    readonly property string resetLabel: {
-        if (!resetTs) return resetIn
+    // Reactive clock: bindings that need the current time depend on `now`
+    // instead of Date.now() (which QML can't track), so a Timer ticking this
+    // property forces the countdown below to re-evaluate live.
+    property double now: new Date().getTime()
+
+    // Milliseconds until reset (-1 when unknown), re-evaluated as `now` ticks.
+    readonly property double diffMs: {
+        if (!resetTs) return -1
         var ts = parseInt(resetTs)
-        if (isNaN(ts) || ts <= 0) return resetIn
-        var diff = ts * 1000 - Date.now()
-        if (diff <= 0) return "now"
-        var totalMins = Math.round(diff / 60000)
+        if (isNaN(ts) || ts <= 0) return -1
+        return ts * 1000 - now
+    }
+
+    Timer {
+        // Tick every second in the final minute so the countdown reads
+        // 55s, 54s, … ; a slower 30s tick is plenty the rest of the time.
+        interval: (root.diffMs > 0 && root.diffMs < 60000) ? 1000 : 30000
+        running: true
+        repeat: true
+        onTriggered: root.now = new Date().getTime()
+    }
+
+    readonly property string resetLabel: {
+        if (diffMs < 0) return resetIn
+        if (diffMs <= 0) return "now"
+        if (diffMs < 60000) return Math.ceil(diffMs / 1000) + "s"
+        var totalMins = Math.round(diffMs / 60000)
         var days = Math.floor(totalMins / 1440)
         var hrs  = Math.floor((totalMins % 1440) / 60)
         var mins = totalMins % 60
