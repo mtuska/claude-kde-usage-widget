@@ -32,6 +32,13 @@ PlasmoidItem {
     readonly property bool statusDegraded: statusData !== null
         && statusIndicator !== "" && statusIndicator !== "none"
 
+    // Local Claude Code activity on this machine (free, no token cost).
+    property var sessionData: null
+
+    readonly property int sessionCount: sessionData ? (sessionData.sessions || 0) : 0
+    readonly property int workingCount: sessionData ? (sessionData.working || 0) : 0
+    readonly property int agentCount: sessionData ? (sessionData.agents || 0) : 0
+
     readonly property var h5: limitData ? limitData.h5 : null
     readonly property var d7: limitData ? limitData.d7 : null
     readonly property bool hasData: limitData !== null
@@ -42,6 +49,7 @@ PlasmoidItem {
 
     readonly property string scriptPath: Qt.resolvedUrl("../code/fetch_limits.sh").toString().replace("file://", "")
     readonly property string statusScriptPath: Qt.resolvedUrl("../code/fetch_status.sh").toString().replace("file://", "")
+    readonly property string sessionScriptPath: Qt.resolvedUrl("../code/fetch_sessions.sh").toString().replace("file://", "")
 
     P5Support.DataSource {
         id: executable
@@ -119,6 +127,28 @@ PlasmoidItem {
         statusExecutable.connectSource("bash '" + safePath + "' '" + proxyMode + "' '" + safeProxy + "'")
     }
 
+    P5Support.DataSource {
+        id: sessionExecutable
+        engine: "executable"
+        connectedSources: []
+        onNewData: function(source, data) {
+            disconnectSource(source)
+            var stdout = (data["stdout"] || "").trim()
+            if (!stdout) return
+            try {
+                var parsed = JSON.parse(stdout)
+                if (!parsed.error) root.sessionData = parsed
+            } catch(e) {
+                // Local activity is best-effort; ignore transient parse errors.
+            }
+        }
+    }
+
+    function fetchSessions() {
+        var safePath = root.sessionScriptPath.replace(/'/g, "'\\''")
+        sessionExecutable.connectSource("bash '" + safePath + "'")
+    }
+
     Timer {
         interval: root.effectiveInterval * 60 * 1000
         running: true
@@ -142,6 +172,16 @@ PlasmoidItem {
         repeat: true
         triggeredOnStart: true
         onTriggered: root.fetchStatus()
+    }
+
+    // Local session activity is a cheap filesystem scan; poll it often so the
+    // "working" count feels live.
+    Timer {
+        interval: 10 * 1000
+        running: true
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: root.fetchSessions()
     }
 
     // ── Compact (panel bar) ──────────────────────────────────────────────────
@@ -203,6 +243,27 @@ PlasmoidItem {
                 }
             }
 
+            // Local Claude Code activity: a green dot + working count (with a
+            // "+N" agent tally), shown only when something is actively working.
+            Row {
+                spacing: 3
+                visible: root.workingCount > 0 || root.agentCount > 0
+
+                Rectangle {
+                    width: 6
+                    height: 6
+                    radius: 3
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: Kirigami.Theme.positiveTextColor
+                }
+
+                PlasmaComponents.Label {
+                    text: root.workingCount + (root.agentCount > 0 ? " +" + root.agentCount : "")
+                    font.pixelSize: 9
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
             PlasmaComponents.Label {
                 text: root.firstLoad ? "…" : (root.errorMsg ? "!" : "")
                 font.pixelSize: 9
@@ -214,8 +275,10 @@ PlasmoidItem {
     // ── Full popup ───────────────────────────────────────────────────────────
     fullRepresentation: Item {
         readonly property int popupWidth: 260
-        // Grow to fit the status line plus one row per active incident.
-        readonly property int popupHeight: 215 + root.incidents.length * 16
+        // Grow to fit the status line, the activity line, and one row per incident.
+        readonly property int popupHeight: 215
+            + root.incidents.length * 16
+            + (root.sessionCount > 0 ? 18 : 0)
 
         implicitWidth: popupWidth
         implicitHeight: popupHeight
@@ -259,6 +322,43 @@ PlasmoidItem {
                 incidents: root.incidents
                 errorText: root.statusError
                 visible: hasStatus
+            }
+
+            // Local Claude Code activity on this machine
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                visible: root.sessionCount > 0
+
+                Kirigami.Icon {
+                    source: "utilities-terminal"
+                    Layout.preferredWidth: 12
+                    Layout.preferredHeight: 12
+                    Layout.alignment: Qt.AlignVCenter
+                }
+
+                PlasmaComponents.Label {
+                    text: root.sessionCount + (root.sessionCount === 1 ? " session" : " sessions")
+                    font.pixelSize: 11
+                    opacity: 0.9
+                }
+
+                PlasmaComponents.Label {
+                    text: "· " + root.workingCount + " working"
+                    font.pixelSize: 11
+                    color: root.workingCount > 0
+                           ? Kirigami.Theme.positiveTextColor
+                           : Kirigami.Theme.disabledTextColor
+                }
+
+                PlasmaComponents.Label {
+                    text: "· " + root.agentCount + (root.agentCount === 1 ? " agent" : " agents")
+                    font.pixelSize: 11
+                    opacity: 0.8
+                    visible: root.agentCount > 0
+                }
+
+                Item { Layout.fillWidth: true }
             }
 
             PlasmaComponents.Label {
