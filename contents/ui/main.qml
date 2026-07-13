@@ -577,12 +577,11 @@ PlasmoidItem {
                 spacing: 6
                 visible: root.cfgShowSessions && root.hasActivity
 
-                Rectangle {
-                    Layout.preferredWidth: 8
-                    Layout.preferredHeight: 8
-                    radius: 4
+                Kirigami.Icon {
+                    source: "utilities-terminal"
+                    Layout.preferredWidth: 12
+                    Layout.preferredHeight: 12
                     Layout.alignment: Qt.AlignVCenter
-                    color: Kirigami.Theme.positiveTextColor
                 }
 
                 PlasmaComponents.Label {
