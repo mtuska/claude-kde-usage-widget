@@ -1,6 +1,10 @@
 #!/bin/bash
-# Fetch Claude rate limit headers by making a minimal API call.
+# Fetch Claude rate-limit windows from the OAuth usage endpoint.
 # Outputs JSON for the QML widget to consume.
+#
+# This is a plain authenticated GET: no inference, no tokens, and nothing
+# charged against the very limits it reports. It reads the same endpoint that
+# Claude Code's own /usage screen uses.
 #
 # Usage: fetch_limits.sh [proxy_mode] [proxy_url]
 #   proxy_mode: none | env (default) | custom
@@ -10,8 +14,7 @@ PROXY_URL="${2:-}"
 CREDS_FILE="${CREDS_FILE:-$HOME/.claude/.credentials.json}"
 export CREDS_FILE
 
-API_URL="https://api.anthropic.com/v1/messages"
-PROBE_BODY='{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}'
+USAGE_URL="https://api.anthropic.com/api/oauth/usage"
 
 err() {
     printf '{"error": "%s"}\n' "$1"
@@ -41,89 +44,101 @@ load_creds() {
     [ -n "$ACCESS_TOKEN" ]
 }
 
-# Prints anthropic-ratelimit-* response headers, empty on failure.
-fetch_headers() {
-    local args=(-si
+# Prints the usage JSON body; empty on any non-2xx (--fail) or transport error.
+fetch_usage() {
+    local args=(-s --fail
         -H "Authorization: Bearer $ACCESS_TOKEN"
-        -H "anthropic-version: 2023-06-01"
-        -H "content-type: application/json"
-        -d "$PROBE_BODY"
+        -H "Content-Type: application/json"
         --max-time 10)
     case "$PROXY_MODE" in
         none)   args+=(--noproxy '*') ;;
         custom) [ -n "$PROXY_URL" ] && args+=(--proxy "$PROXY_URL") ;;
         *)      ;;  # env: curl reads HTTP_PROXY/HTTPS_PROXY automatically
     esac
-    curl "${args[@]}" "$API_URL" 2>/dev/null | grep -i '^anthropic-ratelimit'
+    curl "${args[@]}" "$USAGE_URL" 2>/dev/null
 }
 
 [ -f "$CREDS_FILE" ] || err "No credentials file at ~/.claude/.credentials.json"
 load_creds || err "Failed to read access token"
 
-HEADERS=$(fetch_headers)
+BODY=$(fetch_usage)
 
 # Token may be stale (e.g. right after boot). Spawn claude briefly to
 # trigger OAuth refresh, re-read the token, then retry once.
-if [ -z "$HEADERS" ] && command -v claude >/dev/null 2>&1; then
+if [ -z "$BODY" ] && command -v claude >/dev/null 2>&1; then
     timeout 5 claude -p "x" >/dev/null 2>&1 || true
-    load_creds && HEADERS=$(fetch_headers)
+    load_creds && BODY=$(fetch_usage)
 fi
 
-[ -n "$HEADERS" ] || err "API call failed or no rate limit headers"
+[ -n "$BODY" ] || err "Usage endpoint request failed"
 
-export HEADERS SUBSCRIPTION_TYPE
+export BODY SUBSCRIPTION_TYPE
 python3 - <<'PYEOF'
-import json, os, re, time
+import json, os, sys, time
+from datetime import datetime, timezone
 
-raw = os.environ['HEADERS']
+try:
+    payload = json.loads(os.environ['BODY'])
+except Exception:
+    print(json.dumps({"error": "Malformed response from usage endpoint"}))
+    sys.exit(0)
 
-def get(name):
-    m = re.search(rf'{name}:\s*(.+)', raw, re.IGNORECASE)
-    return m.group(1).strip() if m else None
 
-def to_float(s):
-    try:
-        return float(s)
-    except (TypeError, ValueError):
-        return 0.0
-
-def fmt_reset(ts_str):
-    if not ts_str:
+def iso_to_unix(value):
+    """The endpoint sends ISO-8601; the widget counts down from unix seconds."""
+    if value is None:
         return None
+    if isinstance(value, (int, float)):
+        return float(value)
     try:
-        ts = int(ts_str)
-        mins = round((ts - time.time()) / 60)
-        if mins < 0:
-            return "now"
-        if mins < 60:
-            return f"{mins}m"
-        hours = round(mins / 60)
-        if hours < 24:
-            return f"{hours}h"
-        days = round(hours / 24)
-        return f"{days}d"
-    except Exception:
-        return ts_str
+        dt = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:   # defensive: the API sends an offset, but assume UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
-def window(prefix):
-    reset = get(f"anthropic-ratelimit-unified-{prefix}-reset")
+
+def fmt_reset(ts):
+    if not ts:
+        return None
+    mins = round((ts - time.time()) / 60)
+    if mins < 0:
+        return "now"
+    if mins < 60:
+        return f"{mins}m"
+    hours = round(mins / 60)
+    if hours < 24:
+        return f"{hours}h"
+    return f"{round(hours / 24)}d"
+
+
+def window(raw):
+    if not isinstance(raw, dict):
+        return {"status": None, "utilization": 0.0, "reset_ts": None,
+                "reset_in": None}
+    pct = raw.get("utilization")
+    # The endpoint reports 0-100; the QML works in 0-1.
+    util = float(pct) / 100.0 if isinstance(pct, (int, float)) else 0.0
+    ts = iso_to_unix(raw.get("resets_at"))
     return {
-        "status": get(f"anthropic-ratelimit-unified-{prefix}-status"),
-        "utilization": to_float(get(f"anthropic-ratelimit-unified-{prefix}-utilization")),
-        "reset_ts": reset,
-        "reset_in": fmt_reset(reset),
+        # This endpoint has no allowed/rejected field (the old header API did),
+        # so treat a window as limited exactly when it is used up.
+        "status": "limited" if util >= 1.0 else "allowed",
+        "utilization": util,
+        "reset_ts": str(int(ts)) if ts else None,
+        "reset_in": fmt_reset(ts),
     }
 
+
+extra = payload.get("extra_usage") or {}
 result = {
-    "status": get("anthropic-ratelimit-unified-status"),
-    "fallback": get("anthropic-ratelimit-unified-fallback"),
-    "fallback_pct": get("anthropic-ratelimit-unified-fallback-percentage"),
-    "representative_claim": get("anthropic-ratelimit-unified-representative-claim"),
     # "Usage credits" in the Claude UI: whether spend past the limit is allowed.
-    "overage_status": get("anthropic-ratelimit-unified-overage-status"),
-    "overage_reason": get("anthropic-ratelimit-unified-overage-disabled-reason"),
-    "h5": window("5h"),
-    "d7": window("7d"),
+    "overage_status": {True: "allowed", False: "rejected"}.get(
+        extra.get("is_enabled")),
+    "overage_reason": extra.get("disabled_reason"),
+    "h5": window(payload.get("five_hour")),
+    "d7": window(payload.get("seven_day")),
     "plan": os.environ.get("SUBSCRIPTION_TYPE", ""),
     "updated_at": int(time.time()),
 }

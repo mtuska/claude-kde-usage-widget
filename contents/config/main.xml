@@ -5,8 +5,11 @@
       http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
   <kcfgfile name=""/>
   <group name="General">
+    <!-- Minutes between rate-limit refreshes. The fetch is a free GET against
+         the OAuth usage endpoint, so this is only about how live the bars
+         feel; the endpoint is rate-limited server-side, so stay polite. -->
     <entry name="refreshInterval" type="Int">
-      <default>15</default>
+      <default>1</default>
     </entry>
     <entry name="showTitle" type="Bool">
       <default>true</default>

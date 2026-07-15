@@ -8,7 +8,7 @@ Kirigami.FormLayout {
     property bool cfg_showTitleDefault: true
 
     property alias cfg_refreshInterval: refreshSpinBox.value
-    property int cfg_refreshIntervalDefault: 15
+    property int cfg_refreshIntervalDefault: 1
 
     property string cfg_proxyMode: "env"
     property string cfg_proxyModeDefault: "env"
@@ -41,15 +41,18 @@ Kirigami.FormLayout {
         Kirigami.FormData.label: "Interval (minutes):"
         from: 1
         to: 120
-        value: 15
+        value: 1
         textFromValue: function(v) { return v + " min" }
-        valueFromText: function(t) { return parseInt(t) || 15 }
+        valueFromText: function(t) { return parseInt(t) || 1 }
     }
 
     QQC2.Label {
         Kirigami.FormData.label: ""
-        text: "Each refresh makes one minimal API call (1 token)."
+        text: "Free: each refresh is a plain read of Claude Code's usage "
+              + "endpoint — no tokens.\nThe reset countdown ticks locally "
+              + "every second between refreshes."
         opacity: 0.7
+        wrapMode: Text.WordWrap
         font: Kirigami.Theme.smallFont
     }
 

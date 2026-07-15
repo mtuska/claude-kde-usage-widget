@@ -125,7 +125,7 @@ PlasmoidItem {
     readonly property bool hasData: limitData !== null
     readonly property bool firstLoad: loading && !hasData
 
-    readonly property int effectiveInterval: Math.max(1, Plasmoid.configuration.refreshInterval || 15)
+    readonly property int effectiveInterval: Math.max(1, Plasmoid.configuration.refreshInterval || 1)
     readonly property bool showTitle: Plasmoid.configuration.showTitle !== false
 
     readonly property string scriptPath: Qt.resolvedUrl("../code/fetch_limits.sh").toString().replace("file://", "")

@@ -16,18 +16,38 @@ being fully reached, or on a new incident/maintenance. Compact view lives in the
 
 **KDE Store:** https://www.opendesktop.org/p/2359310
 
+## Nothing here costs you tokens
+
+Every source the widget reads is free. The rate-limit windows come from **`GET
+https://api.anthropic.com/api/oauth/usage`** — the same endpoint Claude Code's own `/usage` screen reads —
+authenticated with the OAuth token Claude Code already keeps in `~/.claude/.credentials.json`. It's a plain read: no
+inference, no tokens, and nothing charged against the very limits it reports.
+
+| Data | Source | Cost |
+|---|---|---|
+| 5h / 7d rate-limit windows, usage credits | `GET /api/oauth/usage` (OAuth) | free |
+| Today's tokens/cost, cache %, model split, 7-day sparkline | local `~/.claude` scan | free |
+| Running / working agents & sub-agents | local transcript mtimes | free |
+| Service status, incidents, maintenance | `status.claude.com` (unauthenticated) | free |
+
+> **Note:** versions before this read the `anthropic-ratelimit-unified-*` **response headers** instead, which meant
+> burning a real (1-token) Haiku call on every refresh just to see the headers come back. The usage endpoint replaces
+> that entirely — so the refresh interval is now only about how live you want the bars, not what they cost. It
+> defaults to 1 minute.
+
 ## How it works
 
-On each refresh the widget runs a shell script that:
+On each rate-limit refresh the widget runs a shell script that:
 
 1. Reads your OAuth token from `~/.claude/.credentials.json` (written by Claude Code)
-2. Makes a minimal `POST /v1/messages` call to `api.anthropic.com` using the cheapest model (
-   `claude-haiku-4-5-20251001`) with `max_tokens: 1`
-3. Extracts the `anthropic-ratelimit-unified-*` response headers
-4. Returns the parsed values as JSON to the widget
+2. `GET`s `https://api.anthropic.com/api/oauth/usage` with that token
+3. Maps the response — `five_hour` and `seven_day`, each a `utilization` percentage plus an ISO-8601 `resets_at`,
+   along with the usage-credits (`extra_usage`) state — into the widget's shape
+4. Returns it as JSON to the widget
 
-> **Note:** Every refresh burns real tokens. The call is as small as possible (1 output token), but it is a real API
-> request that counts against your usage. Set the refresh interval accordingly.
+The reset countdown is then derived locally from that timestamp (see `LimitRow.qml`) and ticks down every second
+between refreshes. The endpoint is itself rate-limited server-side, so the widget stays polite rather than hammering
+it; a failed refresh keeps the last-known values.
 
 Separately, the widget polls `status.claude.com/api/v2/summary.json` every 2 minutes for service status and active
 incidents. That request is unauthenticated and **does not cost any tokens**.
@@ -75,8 +95,8 @@ plasmashell --replace &
 
 Right-click the widget → Configure. Settings are split across three pages.
 
-**General** — show/hide the title, the rate-limit refresh interval (minutes; each refresh is one 1-token API
-call), and proxy mode (see below).
+**General** — show/hide the title, the rate-limit refresh interval (minutes; each refresh is a free GET), and proxy
+mode (see below).
 
 **Components** — toggle each feature independently and set its own poll interval:
 
@@ -88,7 +108,7 @@ call), and proxy mode (see below).
 | Sessions | Local running/working/sub-agent counts (this machine) |
 | Usage | Today's tokens, cost, per-model split, cache-hit %, and 7-day sparkline |
 | Estimated ceiling & ETA | The `used ÷ utilization` ceiling estimate and burn-rate ETA on each limit |
-| Poll intervals | Status (min), sessions (s), usage-scan (s) — status/session/usage scans are local & token-free |
+| Poll intervals | Status (min), sessions (s), usage-scan (s) — all local scans |
 
 **Notifications** — desktop notifications via `notify-send`, each individually toggleable:
 
